@@ -1,14 +1,16 @@
 name: Build Samsung A04 SukiSU-Ultra
 
 on:
-  workflow_dispatch: # 手动触发构建
+  workflow_dispatch: # 手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: 检出仓库代码
         uses: actions/checkout@v4
+        with:
+          submodules: true # 如果有子模块则一并检出
 
       - name: 安装构建环境
         run: |
@@ -22,32 +24,25 @@ jobs:
       - name: 获取工具链 (AOSP Clang)
         run: |
           mkdir clang
-          cd clang
           wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b1.tar.gz
-          tar -xf clang-r416183b1.tar.gz
-
-      - name: 获取内核源码
-        run: |
-          # 请替换为你找到的 A04 内核源码地址
-          # 示例使用 generic a04 源码分支
-          git clone --depth=1 https://github.com/mizuno-asuka/android_kernel_samsung_a04 kernel-src
-          cd kernel-src
+          tar -C clang/ -xf clang-r416183b1.tar.gz
 
       - name: 集成 SukiSU-Ultra
         run: |
-          cd kernel-src
-          # 使用官方安装脚本集成 SukiSU-Ultra 内核部分
+          # 直接在当前目录运行集成脚本
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           
-          # 修改配置文件以启用 SukiSU (假设 defconfig 文件名为 a04_defconfig)
-          # 注意：实际文件名需根据你的源码 arch/arm64/configs/ 确定
-          DEFCONFIG="a04_defconfig" 
+          # 根据你的仓库，A04 的 defconfig 通常是 a04_global_defconfig 或 a04_defconfig
+          # 脚本会自动尝试在 arch/arm64/configs/ 下寻找包含 a04 的配置文件并写入配置
+          DEFCONFIG=$(find arch/arm64/configs/ -name "*a04*_defconfig" | head -n 1 | xargs basename)
+          echo "使用配置文件: $DEFCONFIG"
           echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
           echo "CONFIG_KSU_SUKI_ULTRA=y" >> arch/arm64/configs/$DEFCONFIG
+          # 三星内核通常需要关闭以下项以防冲突
+          echo "CONFIG_STRICT_KERNEL_RWX=n" >> arch/arm64/configs/$DEFCONFIG
 
       - name: 开始编译
         run: |
-          cd kernel-src
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
@@ -56,25 +51,28 @@ jobs:
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # 替换为你实际的 defconfig 文件名
-          make O=out a04_defconfig
+          # 自动获取刚才确定的 DEFCONFIG
+          DEFCONFIG=$(find arch/arm64/configs/ -name "*a04*_defconfig" | head -n 1 | xargs basename)
+          
+          make O=out $DEFCONFIG
           make -j$(nproc --all) O=out \
                       CC=clang \
                       CLANG_TRIPLE=aarch64-linux-gnu- \
                       CROSS_COMPILE=aarch64-linux-gnu- \
-                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                      LD=ld.lld \
-                      AR=llvm-ar \
-                      NM=llvm-nm \
-                      OBJCOPY=llvm-objcopy \
-                      OBJDUMP=llvm-objdump \
-                      STRIP=llvm-strip
+                      CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       - name: 打包 AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          cp kernel-src/out/arch/arm64/boot/Image.gz AnyKernel3/
+          # 三星 A04 (MTK) 通常产出是 Image.gz
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/
+          else
+            cp out/arch/arm64/boot/Image AnyKernel3/
+          fi
           cd AnyKernel3
+          # 修改 anykernel.sh 以匹配 A04 分区 (MTK 一般是 /dev/block/by-name/boot)
+          sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot/block=\/dev\/block\/by-name\/boot/g' anykernel.sh
           zip -r ../SukiSU-Ultra-A04-Kernel.zip *
 
       - name: 上传构建结果
